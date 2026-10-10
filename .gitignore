@@ -1,0 +1,12 @@
+# Build output
+/target/
+
+# Test signing keys from `ota-sender keygen` (never commit private keys)
+keys/
+
+# Generated firmware images and images installed by receivers
+images/
+*.img
+
+# Receiver in-progress temp files (<out>.part)
+*.part
