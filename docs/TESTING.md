@@ -104,33 +104,29 @@ cargo fmt --all --check \
 
 ## 5. Pushing
 
-The repository has no remote yet (`git remote -v` is empty) and history is on `main`.
+This repository pushes to `origin` → `git@github.com:experifarm/OTA_updater.git`, branch `main`.
 
 Before pushing:
 
 ```sh
-git status                                   # clean working tree
+git status -sb                               # clean tree; shows how far main is ahead of origin/main
 git ls-files keys images viz/dist viz/web/node_modules viz/web/src/pkg | wc -l   # must print 0
-git log --oneline                            # the commits you intend to publish
+git log --oneline origin/main..main          # exactly the commits that will be published
 ```
 
-Create a new GitHub repository and push in one step (GitHub CLI, signed in):
+Then run §4 and push:
 
 ```sh
-gh repo create OTA_Updater --private --source . --remote origin --push   # or --public
-```
-
-Or push to an existing, empty repository:
-
-```sh
-git remote add origin git@github.com:<owner>/OTA_Updater.git
-git push -u origin main
+git push origin main
 ```
 
 Verify:
 
 ```sh
-git remote -v
 git status -sb                  # "## main...origin/main" with nothing ahead or behind
 git log --oneline origin/main -3
 ```
+
+For a fresh clone without a remote, either create the GitHub repository and push in one step
+(`gh repo create <owner>/<name> --private --source . --remote origin --push`) or add an existing,
+empty repository (`git remote add origin git@github.com:<owner>/<name>.git && git push -u origin main`).
