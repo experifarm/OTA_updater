@@ -317,6 +317,7 @@ fn final_signed_hash_mismatch_is_not_installed() {
         patch: s.prepared.patch.clone(),
         shards: s.prepared.shards.clone(),
         diff_stats: s.prepared.diff_stats,
+        records: s.prepared.records.clone(),
         prepare_time: s.prepared.prepare_time,
     };
     let rx = rx_with_base(&s.old);
@@ -336,6 +337,7 @@ fn uncompressed_patch_and_default_fec_params() {
         &SenderConfig {
             fw_version: FW_VERSION,
             compression: ota_updater::patch::Compression::None,
+            session_id: Some(0x5e55),
             ..Default::default()
         },
     )

@@ -1,5 +1,6 @@
 //! End-to-end over real UDP multicast on the loopback interface: one sender, two concurrent receivers
 //! with different simulated impairments.
+#![cfg(feature = "native")]
 
 use ed25519_dalek::SigningKey;
 use ota_updater::channel::ImpairmentConfig;

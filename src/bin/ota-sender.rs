@@ -210,6 +210,7 @@ fn send(a: SendArgs) -> Result<()> {
         compression: compression(a.no_compress),
         level: a.level,
         session_id: a.session_id,
+        zstd_frame_size: None,
     };
     println!("preparing update (diff + compress + FEC + sign)...");
     let prepared = sender::prepare(&old, &new, &key, &cfg)?;

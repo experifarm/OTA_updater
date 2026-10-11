@@ -1,0 +1,18 @@
+[package]
+name = "ota_viz"
+version = "0.1.0"
+edition = "2024"
+description = "In-browser OTA simulation for the visualization: runs the real ota_updater engine and emits an event log"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ota_updater = { path = "../..", default-features = false }
+crc32fast = "1.5.2"
+ed25519-dalek = "3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Must match the installed wasm-bindgen CLI exactly.
+wasm-bindgen = "=0.2.128"

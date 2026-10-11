@@ -5,20 +5,42 @@ edition = "2024"
 description = "Broadcast OTA updater: bsdiff-style diff, Reed-Solomon FEC, Ed25519-signed manifests over UDP multicast"
 publish = false
 
+[features]
+default = ["native"]
+# Sockets, OS randomness, the C zstd library and the CLIs. Without it the crate is pure Rust and
+# builds for wasm32-unknown-unknown (zstd is then provided by `ruzstd`).
+native = ["dep:clap", "dep:getrandom", "dep:socket2", "dep:zstd"]
+
 [dependencies]
 anyhow = "1.0.104"
-clap = { version = "4.6.7", features = ["derive"] }
+clap = { version = "4.6.7", features = ["derive"], optional = true }
 crc32fast = "1.5.2"
 ed25519-dalek = "3"
-getrandom = "0.4.3"
+getrandom = { version = "0.4.3", optional = true }
+ruzstd = "0.9"
 sha2 = "0.11"
-socket2 = { version = "0.6.5", features = ["all"] }
+socket2 = { version = "0.6.5", features = ["all"], optional = true }
 thiserror = "2.0.21"
-zstd = "0.14.2"
+zstd = { version = "0.14.2", optional = true }
 
 [dev-dependencies]
 proptest = "1.11.0"
 tempfile = "3.27.0"
+
+[[bin]]
+name = "ota-sender"
+path = "src/bin/ota-sender.rs"
+required-features = ["native"]
+
+[[bin]]
+name = "ota-receiver"
+path = "src/bin/ota-receiver.rs"
+required-features = ["native"]
+
+[workspace]
+# viz/wasm: the in-browser simulation for the visualization (built with wasm-pack).
+members = ["viz/wasm"]
+default-members = ["."]
 
 # Dependencies (zstd, sha2, ed25519) are hot paths; keep them fast even in debug builds.
 [profile.dev.package."*"]

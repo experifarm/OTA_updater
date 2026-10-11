@@ -102,11 +102,23 @@ pub struct ImpairmentStats {
     pub reordered: u64,
 }
 
+/// What the channel did to one datagram (for visualization).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Fate {
+    pub lost: bool,
+    /// Bit index flipped in transit (caught by the CRC at the receiver).
+    pub corrupted_bit: Option<u64>,
+    pub duplicated: bool,
+    /// Number of copies held back (reordered); they are delivered with a later datagram.
+    pub delayed: u8,
+}
+
 pub struct Impairment {
     cfg: ImpairmentConfig,
     rng: SplitMix64,
     bad_state: bool,
-    held: VecDeque<(u32, Vec<u8>)>,
+    held: VecDeque<(u32, u64, Vec<u8>)>,
+    scratch: Vec<(u64, Vec<u8>)>,
     pub stats: ImpairmentStats,
 }
 
@@ -117,6 +129,7 @@ impl Impairment {
             cfg,
             bad_state: false,
             held: VecDeque::new(),
+            scratch: Vec::new(),
             stats: ImpairmentStats::default(),
         }
     }
@@ -138,18 +151,31 @@ impl Impairment {
     }
 
     /// Feed one datagram; append the datagrams to deliver now to `out`.
-    pub fn process(&mut self, mut pkt: Vec<u8>, out: &mut Vec<Vec<u8>>) {
+    pub fn process(&mut self, pkt: Vec<u8>, out: &mut Vec<Vec<u8>>) {
+        let mut tagged = std::mem::take(&mut self.scratch);
+        self.process_tagged(0, pkt, &mut tagged);
+        out.extend(tagged.drain(..).map(|(_, p)| p));
+        self.scratch = tagged;
+    }
+
+    /// Like [`Impairment::process`], but every datagram carries a caller-chosen `tag` so deliveries
+    /// can be matched to what was sent; returns the fate of this datagram.
+    pub fn process_tagged(&mut self, tag: u64, mut pkt: Vec<u8>, out: &mut Vec<(u64, Vec<u8>)>) -> Fate {
+        let mut fate = Fate::default();
         self.stats.seen += 1;
         if self.lose() {
             self.stats.dropped += 1;
+            fate.lost = true;
         } else {
             if !pkt.is_empty() && self.rng.chance(self.cfg.corrupt) {
                 let bit = self.rng.below(pkt.len() as u64 * 8);
                 pkt[(bit / 8) as usize] ^= 1 << (bit % 8);
                 self.stats.corrupted += 1;
+                fate.corrupted_bit = Some(bit);
             }
             let copies = if self.rng.chance(self.cfg.dup) {
                 self.stats.duplicated += 1;
+                fate.duplicated = true;
                 2
             } else {
                 1
@@ -162,10 +188,11 @@ impl Impairment {
                 };
                 if self.cfg.reorder_depth > 0 && self.rng.chance(self.cfg.reorder) {
                     let delay = 1 + self.rng.below(u64::from(self.cfg.reorder_depth)) as u32;
-                    self.held.push_back((delay, p));
+                    self.held.push_back((delay, tag, p));
                     self.stats.reordered += 1;
+                    fate.delayed += 1;
                 } else {
-                    out.push(p);
+                    out.push((tag, p));
                 }
             }
         }
@@ -174,17 +201,23 @@ impl Impairment {
         while i < self.held.len() {
             self.held[i].0 -= 1;
             if self.held[i].0 == 0 {
-                let (_, p) = self.held.remove(i).expect("index in range");
-                out.push(p);
+                let (_, t, p) = self.held.remove(i).expect("index in range");
+                out.push((t, p));
             } else {
                 i += 1;
             }
         }
+        fate
     }
 
     /// Release every held-back datagram (end of stream).
     pub fn flush(&mut self, out: &mut Vec<Vec<u8>>) {
-        out.extend(self.held.drain(..).map(|(_, p)| p));
+        out.extend(self.held.drain(..).map(|(_, _, p)| p));
+    }
+
+    /// Release every held-back datagram with its tag (end of stream).
+    pub fn flush_tagged(&mut self, out: &mut Vec<(u64, Vec<u8>)>) {
+        out.extend(self.held.drain(..).map(|(_, t, p)| (t, p)));
     }
 }
 
@@ -293,6 +326,45 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(run(cfg, 5000).1, run(cfg, 5000).1);
+    }
+
+    #[test]
+    fn tagged_fates_match_deliveries() {
+        let cfg = ImpairmentConfig {
+            loss: 0.2,
+            burst_len: 3.0,
+            corrupt: 0.05,
+            dup: 0.05,
+            reorder: 0.1,
+            seed: 21,
+            ..Default::default()
+        };
+        let mut tagged = Impairment::new(cfg);
+        let mut plain = Impairment::new(cfg);
+        let (mut out_t, mut out_p) = (Vec::new(), Vec::new());
+        let mut expected_copies = std::collections::HashMap::new();
+        for i in 0..10_000u64 {
+            let pkt = i.to_le_bytes().to_vec();
+            let fate = tagged.process_tagged(i, pkt.clone(), &mut out_t);
+            plain.process(pkt, &mut out_p);
+            if !fate.lost {
+                expected_copies.insert(i, if fate.duplicated { 2 } else { 1 });
+            }
+            if let Some(bit) = fate.corrupted_bit {
+                assert!(bit < 64);
+            }
+        }
+        tagged.flush_tagged(&mut out_t);
+        plain.flush(&mut out_p);
+        // Same RNG consumption as the untagged path: identical deliveries.
+        assert_eq!(out_t.iter().map(|(_, p)| p.clone()).collect::<Vec<_>>(), out_p);
+        assert_eq!(tagged.stats, plain.stats);
+        // Every surviving packet is delivered with its own tag, the right number of times.
+        let mut copies = std::collections::HashMap::new();
+        for (tag, _) in &out_t {
+            *copies.entry(*tag).or_insert(0) += 1;
+        }
+        assert_eq!(copies, expected_copies);
     }
 
     #[test]

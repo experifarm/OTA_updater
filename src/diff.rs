@@ -31,12 +31,45 @@ fn match_len(a: &[u8], b: &[u8]) -> usize {
 
 /// Longest match of a prefix of `new` among the suffixes of `old`. Returns `(len, pos)`.
 fn search(sa: &[i32], old: &[u8], new: &[u8]) -> (usize, usize) {
+    search_traced(sa, old, new, |_| {})
+}
+
+/// One binary-search step over the suffix array: the window `[lo, hi]`, the probed index `mid`, and
+/// whether the probed suffix sorted before the query (`go_right`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SearchStep {
+    pub lo: usize,
+    pub hi: usize,
+    pub mid: usize,
+    pub go_right: bool,
+}
+
+/// The diff's suffix-array search, reporting each binary-search step (for visualization). Generic
+/// over the observer so the no-op version used by the diff compiles to the plain loop.
+///
+/// Note: bsdiff 4.3 compares only `min(suffix len, query len)` bytes, so a suffix that is a proper
+/// prefix of the query compares "equal" and the search goes left, past longer matches (e.g. it
+/// finds "a" instead of "ana" for "anab" in "banana"). Here such a suffix correctly sorts before
+/// the query, so the window always ends next to the query's insertion point and the longest match
+/// is one of its two neighbours.
+pub fn search_traced<F: FnMut(SearchStep)>(sa: &[i32], old: &[u8], new: &[u8], mut on_step: F) -> (usize, usize) {
     let (mut st, mut en) = (0usize, sa.len() - 1);
     while en - st >= 2 {
         let x = st + (en - st) / 2;
         let p = sa[x] as usize;
         let m = (old.len() - p).min(new.len());
-        if old[p..p + m] < new[..m] {
+        let go_right = match old[p..p + m].cmp(&new[..m]) {
+            std::cmp::Ordering::Less => true,
+            std::cmp::Ordering::Equal => old.len() - p < new.len(),
+            std::cmp::Ordering::Greater => false,
+        };
+        on_step(SearchStep {
+            lo: st,
+            hi: en,
+            mid: x,
+            go_right,
+        });
+        if go_right {
             st = x;
         } else {
             en = x;
@@ -47,8 +80,23 @@ fn search(sa: &[i32], old: &[u8], new: &[u8]) -> (usize, usize) {
     if x > y { (x, ps) } else { (y, pe) }
 }
 
+/// One patch record, for visualization: new bytes `[new_off, new_off + diff_len)` are produced from
+/// old bytes `[old_off, old_off + diff_len)` plus diff bytes, followed by `extra_len` literal bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiffRecord {
+    pub new_off: u64,
+    pub old_off: u64,
+    pub diff_len: u64,
+    pub extra_len: u64,
+}
+
 /// Produce the uncompressed patch stream transforming `old` into `new`.
 pub fn diff_raw(old: &[u8], new: &[u8]) -> (Vec<u8>, DiffStats) {
+    diff_raw_traced(old, new, &mut |_| {})
+}
+
+/// Like [`diff_raw`], reporting every record to `on_record`.
+pub fn diff_raw_traced(old: &[u8], new: &[u8], on_record: &mut dyn FnMut(DiffRecord)) -> (Vec<u8>, DiffStats) {
     assert!(old.len() <= suffix::MAX_LEN, "old image too large");
     let sa = suffix_array(old);
     let oldsize = old.len() as i64;
@@ -160,6 +208,12 @@ pub fn diff_raw(old: &[u8], new: &[u8]) -> (Vec<u8>, DiffStats) {
             );
             let es = (lastscan + lenf) as usize;
             out.extend_from_slice(&new[es..es + extra_len as usize]);
+            on_record(DiffRecord {
+                new_off: lastscan as u64,
+                old_off: lastpos as u64,
+                diff_len: lenf as u64,
+                extra_len: extra_len as u64,
+            });
 
             stats.records += 1;
             stats.diff_bytes += lenf as u64;
@@ -177,13 +231,66 @@ pub fn diff_raw(old: &[u8], new: &[u8]) -> (Vec<u8>, DiffStats) {
 
 /// Produce the final patch: diff + optional zstd compression of the whole stream.
 pub fn make_patch(old: &[u8], new: &[u8], compression: Compression, level: i32) -> io::Result<(Vec<u8>, DiffStats)> {
-    let (raw, mut stats) = diff_raw(old, new);
-    let patch = match compression {
-        Compression::None => raw,
-        Compression::Zstd => zstd::stream::encode_all(raw.as_slice(), level)?,
+    let (raw, stats) = diff_raw(old, new);
+    finish_patch(raw, stats, compression, level)
+}
+
+/// Compress a raw patch stream (if requested) and record the final size in `stats`.
+pub fn finish_patch(
+    raw: Vec<u8>,
+    stats: DiffStats,
+    compression: Compression,
+    level: i32,
+) -> io::Result<(Vec<u8>, DiffStats)> {
+    finish_patch_framed(raw, stats, compression, level, None)
+}
+
+/// Like [`finish_patch`]; with `frame_size = Some(n)` the zstd stream is a sequence of independent
+/// frames of at most `n` raw bytes each, which lets every decoder stream it (see
+/// [`crate::patch::PushDecompressor`]) at a small cost in compression ratio.
+pub fn finish_patch_framed(
+    raw: Vec<u8>,
+    mut stats: DiffStats,
+    compression: Compression,
+    level: i32,
+    frame_size: Option<usize>,
+) -> io::Result<(Vec<u8>, DiffStats)> {
+    let patch = match (compression, frame_size) {
+        (Compression::None, _) => raw,
+        (Compression::Zstd, None) => compress_zstd(&raw, level)?,
+        (Compression::Zstd, Some(n)) => compress_zstd_framed(&raw, level, n)?,
     };
     stats.patch_len = patch.len() as u64;
     Ok((patch, stats))
+}
+
+/// zstd-compress `data` as concatenated independent frames of at most `frame_size` input bytes.
+pub fn compress_zstd_framed(data: &[u8], level: i32, frame_size: usize) -> io::Result<Vec<u8>> {
+    if data.is_empty() {
+        return compress_zstd(data, level);
+    }
+    let mut out = Vec::new();
+    for chunk in data.chunks(frame_size.max(1)) {
+        out.extend(compress_zstd(chunk, level)?);
+    }
+    Ok(out)
+}
+
+/// zstd-compress with the C library (native builds).
+#[cfg(feature = "native")]
+pub fn compress_zstd(data: &[u8], level: i32) -> io::Result<Vec<u8>> {
+    zstd::stream::encode_all(data, level)
+}
+
+/// zstd-compress with the pure-Rust `ruzstd` encoder (non-native builds, e.g. WebAssembly). `ruzstd`
+/// only implements its "fastest" level (≈ zstd level 1), so `level` is ignored. The output is a
+/// standard zstd frame (128 KiB window) readable by any zstd decoder.
+#[cfg(not(feature = "native"))]
+pub fn compress_zstd(data: &[u8], _level: i32) -> io::Result<Vec<u8>> {
+    Ok(ruzstd::encoding::compress_to_vec(
+        data,
+        ruzstd::encoding::CompressionLevel::Fastest,
+    ))
 }
 
 #[cfg(test)]
@@ -262,7 +369,9 @@ mod tests {
         let stats = roundtrip(&old, &new);
         assert_eq!(stats.extra_bytes, 0, "{stats:?}");
         let (z, _) = make_patch(&old, &new, Compression::Zstd, 19).unwrap();
-        assert!(z.len() < old.len() / 50, "patch {} bytes, {stats:?}", z.len());
+        // C zstd level 19 reaches > 50x on this table; the pure-Rust encoder (fastest level) ~35x.
+        let min_ratio = if cfg!(feature = "native") { 50 } else { 25 };
+        assert!(z.len() < old.len() / min_ratio, "patch {} bytes, {stats:?}", z.len());
     }
 
     #[test]
@@ -326,8 +435,26 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn search_finds_the_longest_match_through_prefix_suffixes() {
+        // bsdiff 4.3's truncated comparison returns "a" (len 1) here.
+        let sa = suffix_array(b"banana");
+        assert_eq!(search(&sa, b"banana", b"anab"), (3, 1));
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(64))]
+
+        /// The suffix-array search returns a longest match (checked against brute force).
+        #[test]
+        fn prop_search_is_longest(old in proptest::collection::vec(0u8..3, 0..200),
+                                  query in proptest::collection::vec(0u8..3, 0..40)) {
+            let sa = suffix_array(&old);
+            let (len, pos) = search(&sa, &old, &query);
+            let best = (0..=old.len()).map(|p| match_len(&old[p..], &query)).max().unwrap();
+            prop_assert_eq!(len, best);
+            prop_assert_eq!(match_len(&old[pos..], &query), len);
+        }
 
         #[test]
         fn prop_roundtrip(old in proptest::collection::vec(0u8..8, 0..3000),

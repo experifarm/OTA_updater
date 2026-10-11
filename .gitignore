@@ -10,3 +10,8 @@ images/
 
 # Receiver in-progress temp files (<out>.part)
 *.part
+
+# Visualization: npm deps, generated WASM bindings (viz/build-wasm.sh) and the built page
+viz/web/node_modules/
+viz/web/src/pkg/
+viz/dist/

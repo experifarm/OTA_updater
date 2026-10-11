@@ -1,6 +1,6 @@
 //! Sender pipeline: diff → compress → slice → Reed-Solomon → signed manifest → broadcast schedule.
 
-use crate::diff::{self, DiffStats};
+use crate::diff::{self, DiffRecord, DiffStats};
 use crate::manifest::Manifest;
 use crate::patch::Compression;
 use crate::slicer::{self, FecParams, Layout};
@@ -9,7 +9,19 @@ use anyhow::{Result, bail};
 use ed25519_dalek::SigningKey;
 use std::io;
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+/// Measures elapsed wall time where a clock exists (`Instant::now` panics on wasm32-unknown-unknown).
+#[cfg(feature = "native")]
+fn stopwatch() -> impl FnOnce() -> Duration {
+    let start = std::time::Instant::now();
+    move || start.elapsed()
+}
+
+#[cfg(not(feature = "native"))]
+fn stopwatch() -> impl FnOnce() -> Duration {
+    || Duration::ZERO
+}
 
 /// Destination for encoded datagrams (UDP socket, in-memory collector, channel, …).
 pub trait PacketSink {
@@ -39,6 +51,9 @@ pub struct SenderConfig {
     pub level: i32,
     /// Fixed session id (random if `None`).
     pub session_id: Option<u64>,
+    /// Compress as independent zstd frames of this many raw bytes, so pure-Rust decoders can stream
+    /// (single frame if `None`).
+    pub zstd_frame_size: Option<usize>,
 }
 
 impl Default for SenderConfig {
@@ -49,6 +64,7 @@ impl Default for SenderConfig {
             compression: Compression::Zstd,
             level: 19,
             session_id: None,
+            zstd_frame_size: None,
         }
     }
 }
@@ -62,6 +78,8 @@ pub struct Prepared {
     /// Per group, all k + m shards (implicit zero shards included but never sent).
     pub shards: Vec<Vec<Vec<u8>>>,
     pub diff_stats: DiffStats,
+    /// The diff records of the patch (old → new mapping), e.g. for visualization.
+    pub records: Vec<DiffRecord>,
     pub prepare_time: Duration,
 }
 
@@ -71,8 +89,11 @@ pub fn prepare(old: &[u8], new: &[u8], key: &SigningKey, cfg: &SenderConfig) -> 
     if old.len() > crate::suffix::MAX_LEN {
         bail!("old image too large ({} bytes)", old.len());
     }
-    let start = Instant::now();
-    let (patch, diff_stats) = diff::make_patch(old, new, cfg.compression, cfg.level)?;
+    let elapsed = stopwatch();
+    let mut records = Vec::new();
+    let (raw, raw_stats) = diff::diff_raw_traced(old, new, &mut |r| records.push(r));
+    let (patch, diff_stats) =
+        diff::finish_patch_framed(raw, raw_stats, cfg.compression, cfg.level, cfg.zstd_frame_size)?;
     let layout = Layout::new(cfg.fec, patch.len() as u64);
     if layout.group_count() > u64::from(u32::MAX) {
         bail!("patch too large for the FEC layout");
@@ -83,7 +104,10 @@ pub fn prepare(old: &[u8], new: &[u8], key: &SigningKey, cfg: &SenderConfig) -> 
         .collect();
     let session_id = match cfg.session_id {
         Some(id) => id,
+        #[cfg(feature = "native")]
         None => crate::keys::random_u64()?,
+        #[cfg(not(feature = "native"))]
+        None => bail!("a session id is required without OS randomness (feature `native`)"),
     };
     let manifest = Manifest {
         session_id,
@@ -105,7 +129,8 @@ pub fn prepare(old: &[u8], new: &[u8], key: &SigningKey, cfg: &SenderConfig) -> 
         patch,
         shards,
         diff_stats,
-        prepare_time: start.elapsed(),
+        records,
+        prepare_time: elapsed(),
     })
 }
 

@@ -58,7 +58,7 @@ impl ReedSolomon {
     }
 
     /// Row `idx` of the systematic generator matrix (length k).
-    fn generator_row(&self, idx: usize) -> Vec<u8> {
+    pub fn generator_row(&self, idx: usize) -> Vec<u8> {
         if idx < self.k {
             let mut row = vec![0u8; self.k];
             row[idx] = 1;
@@ -67,6 +67,28 @@ impl ReedSolomon {
             let i = idx - self.k;
             self.parity[i * self.k..(i + 1) * self.k].to_vec()
         }
+    }
+
+    /// The m×k Cauchy parity matrix (row-major).
+    pub fn parity_matrix(&self) -> &[u8] {
+        &self.parity
+    }
+
+    /// The k×k matrix formed by the generator rows of the `chosen` shards, and its inverse — exactly
+    /// what [`ReedSolomon::reconstruct`] solves with (for visualization). `None` unless `chosen` holds
+    /// k distinct valid shard indices.
+    pub fn decode_matrix(&self, chosen: &[usize]) -> Option<(Vec<u8>, Vec<u8>)> {
+        let mut seen = vec![false; self.total_shards()];
+        if chosen.len() != self.k
+            || chosen
+                .iter()
+                .any(|&i| i >= seen.len() || std::mem::replace(&mut seen[i], true))
+        {
+            return None;
+        }
+        let matrix: Vec<u8> = chosen.iter().flat_map(|&i| self.generator_row(i)).collect();
+        let inverse = invert(&matrix, self.k)?;
+        Some((matrix, inverse))
     }
 
     /// Compute the m parity shards for `data` (exactly k equally sized shards).
@@ -258,6 +280,22 @@ mod tests {
             }
         }
         assert!(invert(&[1, 1, 1, 1], 2).is_none());
+    }
+
+    #[test]
+    fn decode_matrix_matches_rows_and_validates_input() {
+        let rs = ReedSolomon::new(5, 3).unwrap();
+        let (m, inv) = rs.decode_matrix(&[0, 2, 5, 6, 7]).unwrap();
+        let mut expected = Vec::new();
+        for idx in [0, 2, 5, 6, 7] {
+            expected.extend(rs.generator_row(idx));
+        }
+        assert_eq!(m, expected);
+        assert_eq!(inv, invert(&expected, 5).unwrap());
+        assert_eq!(&rs.parity_matrix()[..5], &rs.generator_row(5)[..]);
+        assert!(rs.decode_matrix(&[0, 1, 2, 3]).is_none(), "needs k rows");
+        assert!(rs.decode_matrix(&[0, 1, 2, 3, 3]).is_none(), "rows must be distinct");
+        assert!(rs.decode_matrix(&[0, 1, 2, 3, 8]).is_none(), "index out of range");
     }
 
     /// Every erasure pattern of size <= m is recoverable (exhaustive for small codes).

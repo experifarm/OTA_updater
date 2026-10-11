@@ -7,14 +7,19 @@
 //! [`rs`] reconstruct → per-group hash check → streaming [`patch`] apply → signed hash verification.
 //!
 //! See `docs/DESIGN.md` for the full design.
+//!
+//! Feature `native` (default) adds UDP sockets ([`net`]), OS randomness ([`keys`]) and the C zstd
+//! library. Without it the crate is pure Rust (zstd via `ruzstd`) and builds for WebAssembly.
 
 pub mod channel;
 pub mod diff;
 pub mod gf256;
 pub mod hashio;
 pub mod imagegen;
+#[cfg(feature = "native")]
 pub mod keys;
 pub mod manifest;
+#[cfg(feature = "native")]
 pub mod net;
 pub mod patch;
 pub mod receiver;

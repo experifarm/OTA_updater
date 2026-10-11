@@ -49,25 +49,29 @@ image is additionally checked against the signed full-image hash before it is ac
 
 ## 2. Crate layout
 
-Single Cargo package `ota_updater` (library + two binaries):
+Cargo package `ota_updater` (library + two binaries); workspace member `viz/wasm` holds the
+browser simulation (see `docs/VISUALIZATION.md`). Feature `native` (default) adds sockets, OS
+randomness, the C zstd library and the CLIs; without it the library is pure Rust and builds for
+`wasm32-unknown-unknown` (zstd via `ruzstd`).
 
 ```
 src/lib.rs
 src/gf256.rs      GF(2^8), poly 0x11D, exp/log tables, slice multiply-accumulate
 src/rs.rs         Systematic Reed-Solomon erasure codec, [I; Cauchy] matrix, Gauss-Jordan inverse
 src/suffix.rs     Larsson–Sadakane qsufsort (as used by bsdiff), i32 indices, explicit stack
-src/diff.rs       bsdiff 4.x match/extend scoring -> interleaved streamable patch (+ zstd)
-src/patch.rs      Streaming apply: Read(patch) + Read+Seek(old) -> Write(new), O(64 KiB) memory
+src/diff.rs       bsdiff 4.x match/extend scoring -> interleaved streamable patch (+ zstd, optionally multi-frame)
+src/patch.rs      Push-based StreamingPatcher (+ pull `apply`), PushDecompressor; O(64 KiB) memory
 src/hashio.rs     Hashing reader/writer adapters (SHA-256 on the fly)
 src/varint.rs     LEB128 varints + zigzag (patch record headers)
 src/slicer.rs     Patch <-> groups/shards layout, padding shards, group hashes
 src/manifest.rs   Manifest binary format, domain-separated Ed25519 sign / verify_strict
-src/keys.rs       Key generation, hex key files
+src/keys.rs       Key generation, hex key files (native)
 src/wire.rs       Packet encode/decode with CRC32 trailer
 src/channel.rs    Impairment simulator: Bernoulli / Gilbert-Elliott loss, dup, reorder, corrupt
-src/net.rs        socket2 multicast setup, SO_REUSEPORT, SO_RCVBUF, token-bucket rate limiter
+src/net.rs        socket2 multicast setup, SO_REUSEPORT, SO_RCVBUF, token-bucket rate limiter (native)
 src/sender.rs     Prepare (diff+compress+slice+FEC+sign) and broadcast schedule
-src/receiver.rs   Receiver state machine; network loop -> channel reader -> apply thread
+src/receiver/core.rs  Sans-IO receiver state machine (ReceiverCore -> RxEvent), also used by viz/wasm
+src/receiver/mod.rs   Driver: source -> impairment -> ReceiverCore -> apply thread -> verified install
 src/imagegen.rs   Synthetic firmware image pair generator (demo / tests)
 src/bin/ota-sender.rs     keygen | gen-images | diff | send
 src/bin/ota-receiver.rs   listen | apply
@@ -84,7 +88,9 @@ tests/e2e_udp.rs          loopback multicast, two receivers with different loss
    original left → assign → right order (required for correctness of in-place group renumbering).
 2. Scan `new`: at each position binary-search the suffix array for the longest exact match, then use
    bsdiff's *approximate-match* scoring (accept a match if it beats the current alignment by > 8 bytes),
-   extend forwards/backwards allowing mismatches, and resolve overlaps.
+   extend forwards/backwards allowing mismatches, and resolve overlaps. Unlike bsdiff 4.3, the search
+   treats a suffix that is a proper prefix of the query as smaller (bsdiff's truncated `memcmp` calls
+   it equal and can miss the longest match); on the synthetic test images this changed no patch byte.
 3. Each step yields a control triple `(diff_len, extra_len, seek)`:
    - `diff_len` bytes encoded as `new[i] - old[j]` (wrapping) — mostly zeros for shifted code, very compressible;
    - `extra_len` literal bytes copied from `new`;

@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OTA, explained</title>
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="top">
+        <div class="titles">
+          <h1 data-i18n="title"></h1>
+          <p data-i18n="subtitle"></p>
+        </div>
+        <div class="lang" role="group" aria-label="Language">
+          <button type="button" data-lang="en">EN</button>
+          <button type="button" data-lang="zh">中文</button>
+        </div>
+      </header>
+      <nav class="modes" aria-label="Mode">
+        <a href="#learn/1" id="mode-learn"></a>
+        <a href="#sandbox" id="mode-sandbox"></a>
+      </nav>
+
+      <section id="learn-view" class="learn" hidden></section>
+
+      <section id="sandbox-view" hidden>
+        <section class="controls">
+          <div class="presets" id="presets" role="radiogroup"></div>
+          <label class="scale">
+            <span data-i18n="scale"></span>
+            <select id="scale">
+              <option value="toy" data-i18n="scaleToy"></option>
+              <option value="real" data-i18n="scaleReal"></option>
+            </select>
+          </label>
+        </section>
+        <p class="preset-desc" id="preset-desc"></p>
+
+        <main class="layout">
+          <div class="stage">
+            <canvas id="stage" aria-label="OTA broadcast animation"></canvas>
+            <div id="busy" class="busy" hidden><span data-i18n="computing"></span></div>
+            <div id="error" class="error" hidden></div>
+          </div>
+          <aside class="side">
+            <h2 data-i18n="happening"></h2>
+            <ol id="feed" class="feed" aria-live="polite"></ol>
+            <h2 data-i18n="update"></h2>
+            <dl id="card" class="card"></dl>
+            <details id="custom" class="custom">
+              <summary data-i18n="customize"></summary>
+              <div id="custom-body"></div>
+            </details>
+            <h2 data-i18n="legend"></h2>
+            <ul id="legend" class="legend"></ul>
+          </aside>
+        </main>
+
+        <section class="transport">
+          <button type="button" id="play" class="btn-icon"></button>
+          <button type="button" id="prev" class="btn-icon">⏮</button>
+          <button type="button" id="next" class="btn-icon">⏭</button>
+          <button type="button" id="restart" class="btn-icon">⟲</button>
+          <div class="timeline">
+            <canvas id="marks" aria-hidden="true"></canvas>
+            <input id="scrub" type="range" min="0" max="1000" step="1" value="0" aria-label="Timeline" />
+          </div>
+          <span id="clock" class="clock"></span>
+          <label class="speed">
+            <span data-i18n="speed"></span>
+            <select id="speed">
+              <option value="0.25">0.25×</option>
+              <option value="0.5">0.5×</option>
+              <option value="1" selected>1×</option>
+              <option value="2">2×</option>
+              <option value="4">4×</option>
+              <option value="8">8×</option>
+              <option value="16">16×</option>
+            </select>
+          </label>
+        </section>
+
+        <section id="toy" class="toy" hidden></section>
+      </section>
+      <footer class="foot" id="foot"></footer>
+    </div>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

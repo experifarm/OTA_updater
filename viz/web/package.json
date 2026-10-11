@@ -1,0 +1,19 @@
+{
+  "name": "ota-explained",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Interactive, bilingual explainer of the OTA update pipeline, driven by the real Rust engine compiled to WebAssembly",
+  "scripts": {
+    "wasm": "../build-wasm.sh",
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4",
+    "vite-plugin-singlefile": "^2.3.3"
+  }
+}
